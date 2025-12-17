@@ -217,7 +217,9 @@ def diff_indicator(value):
     return f"<span style='color:{color}; font-weight:bold;'>{arrow} {sign}{value:.1f}%</span>"
 
 def weighted_card_block(row, label):
-    if row is None: return f"<p>{label}: —</p>"
+    if row is None:
+        return ""
+
     price = f"{row['weighted_agile_price']:.2f}"
     diff_yda = diff_indicator(row['relative_diff_to_yda'])
     diff_fixed = diff_indicator(row['relative_diff_to_fixed'])
