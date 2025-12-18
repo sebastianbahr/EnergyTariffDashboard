@@ -47,45 +47,30 @@ def fetch_tariffs(baseurl: str, period_from: str, period_to: str):
 # ---------------------------
 # Dishwasher Optimizer Function
 # ---------------------------
-def optimal_dishwasher_start_time(full_tariffs_df: pd.DataFrame, consumption: list, today_date_str, tomorrow_date_str):
+def optimal_dishwasher_start_time(full_tariffs_df: pd.DataFrame, consumption: list, today_date_str, tomorrow_date_str, finish_by_time):
     run_length = len(consumption)
     
     today = pd.to_datetime(today_date_str).date()
     tomorrow = pd.to_datetime(tomorrow_date_str).date()
     
-    # Filter tariffs for the required time window
+    # Filter tariffs for the required time window (from 11pm today until user's finish time tomorrow)
     run_window_df = full_tariffs_df[
         ((full_tariffs_df['date'] == today) & (full_tariffs_df['time'] >= datetime.time(23, 0))) |
-        ((full_tariffs_df['date'] == tomorrow) & (full_tariffs_df['time'] < datetime.time(7, 0)))
-    ].sort_values(by='time').reset_index(drop=True)
+        ((full_tariffs_df['date'] == tomorrow) & (full_tariffs_df['time'] < finish_by_time))
+    ].sort_values(by=['date', 'time']).reset_index(drop=True)
 
     if run_window_df.empty or len(run_window_df) < run_length:
         return None, None, "Not enough tariff data available."
     
-    # Determine the latest possible start index to finish by 07:00
-    try:
-        # Find the index for 03:30 tomorrow to ensure we finish by 07:00
-        # (Assuming 3.5 hour run time)
-        max_start_index = run_window_df[
-            (run_window_df['date'] == tomorrow) & 
-            (run_window_df['time'] == datetime.time(3, 30))
-        ].index[0]
-    except IndexError:
-        # Fallback: just ensure the run fits in the dataframe
-        max_start_index = len(run_window_df) - run_length
+    # The last index we can start at is (Total slots in window - number of slots for run)
+    max_start_index = len(run_window_df) - run_length
 
     results = []
-    
     for start_index in range(max_start_index + 1):
-        # Calculate cost
         prices_for_run = run_window_df['agile_price'].iloc[start_index : start_index + run_length].tolist()
         total_cost_p = sum(c * p for c, p in zip(consumption, prices_for_run))
         
-        # 1. Get the Start Time (from the current index)
         actual_start_time = run_window_df.iloc[start_index]['valid_from']
-        
-        # 2. Get the End Time (last slot's start time + 30 mins)
-        # We use valid_from + 30 mins to avoid the KeyError on 'valid_to'
         last_slot_start = run_window_df.iloc[start_index + run_length - 1]['valid_from']
         actual_end_time = last_slot_start + datetime.timedelta(minutes=30)
         
@@ -110,8 +95,33 @@ DEFAULT_BASEURL = 'https://api.octopus.energy/v1/products/AGILE-24-10-01/electri
 DEFAULT_GAS_URL = 'https://api.octopus.energy/v1/products/SILVER-25-09-02/gas-tariffs/G-1R-SILVER-25-09-02-N/standard-unit-rates/'
 
 date_today = date.today().strftime('%Y-%m-%d')
+date_tomorrow_obj = (date.today() + datetime.timedelta(days=1))
 date_tomorrow = (date.today() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
 date_yesterday = (date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+
+# Dishwasher Time Logic
+st.sidebar.header("Dishwasher Settings")
+
+# Determine default based on weekday/weekend (Tomorrow's day)
+# Weekday is 0-4, Weekend is 5-6
+if date_tomorrow_obj.weekday() < 5:
+    default_time = datetime.time(7, 0)
+else:
+    default_time = datetime.time(8, 0)
+
+# Create steps: 06:00 to 12:00 in 30 min increments
+time_options = []
+for hour in range(6, 13):
+    time_options.append(datetime.time(hour, 0))
+    if hour < 12: # Don't add 12:30
+        time_options.append(datetime.time(hour, 30))
+
+selected_finish_time = st.sidebar.select_slider(
+    "Finish dishwasher by:",
+    options=time_options,
+    value=default_time,
+    format_func=lambda x: x.strftime("%H:%M")
+)
 
 # Electricity Period
 elec_period_from = f'{date_yesterday}T00:00'
@@ -258,7 +268,7 @@ with col3:
 
 
 # Optimiser
-optimal_start, optimal_end, optimal_cost = optimal_dishwasher_start_time(tariffs_visuals, DISHWASHER_CONSUMPTION, date_today, date_tomorrow)
+optimal_start, optimal_end, optimal_cost = optimal_dishwasher_start_time(tariffs_visuals, DISHWASHER_CONSUMPTION, date_today, date_tomorrow, selected_finish_time)
 with col4:
     if optimal_start:
         # Define UK Timezone
