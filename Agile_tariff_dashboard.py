@@ -4,6 +4,7 @@ import time
 import datetime
 from datetime import date
 from zoneinfo import ZoneInfo
+from urllib import parse
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -16,6 +17,9 @@ st.caption("Shows today's and tomorrow's cheapest & highest periods, weighted ag
 # ---------------------------
 # Helpers & data fetching
 # ---------------------------
+
+now_utc = pd.Timestamp.now(tz='UTC').floor('30min')
+now_local = now_utc.tz_convert("Europe/London")
 
 # Dishwasher Consumption Profile (3:30 hours / 7 slots)
 DISHWASHER_CONSUMPTION = [0.06, 0.33, 0.1, 0.28, 0.01, 0.02, 0.04] # kWh
@@ -43,6 +47,34 @@ def fetch_tariffs(baseurl: str, period_from: str, period_to: str):
     df['date'] = df.valid_from.dt.date
     df['time'] = df.valid_from.dt.time
     return df
+
+
+def add_daytime_shading(fig, now_local, end_dt):
+    """
+    Adds light grey background shading from 07:00–22:00 (local time),
+    starting no earlier than now_local.
+    """
+    current_day = now_local.normalize()
+
+    while current_day <= end_dt:
+        day_start = current_day + pd.Timedelta(hours=7)
+        day_end = current_day + pd.Timedelta(hours=22)
+
+        # Clip start so we never shade before "now"
+        rect_start = max(day_start, now_local)
+
+        # Only add rectangle if there's something to show
+        if rect_start < day_end:
+            fig.add_vrect(
+                x0=rect_start,
+                x1=day_end,
+                fillcolor="lightgrey",
+                opacity=0.25,
+                layer="below",
+                line_width=0,
+            )
+
+        current_day += pd.Timedelta(days=1)
 
 # ---------------------------
 # Dishwasher Optimizer Function
@@ -135,6 +167,11 @@ regions_peak_adder = st.sidebar.number_input("Peak adder (pence)", value=13.0, s
 high_threshold = st.sidebar.number_input("High price threshold (pence)", value=30.0, step=0.1)
 
 st.sidebar.markdown("---")
+st.sidebar.header("Wind Forecast Configuration")
+
+wind_days_ahead = st.sidebar.slider("Days ahead for wind forecast",min_value=1,max_value=7,value=3,step=1)
+
+st.sidebar.markdown("---")
 st.sidebar.header("Gas Configuration")
 gas_fixed_price = st.sidebar.number_input("Fixed gas price (pence/kWh)", min_value=0.0, value=5.60, step=0.01, format="%.2f")
 
@@ -195,6 +232,45 @@ highest_per_date = tariffs.loc[
 daily_aggregate = cheapest_per_date[['date','cheapest_time','cheapest_price']].merge(
     highest_per_date[['date','highest_time','highest_price']], how='left', on='date')
 daily_aggregate = daily_aggregate.merge(weighted_avg, how='left', on='date')
+
+
+# ---------------------------
+# Wind Generation Data Fetching
+# ---------------------------
+@st.cache_data(ttl=900)
+def fetch_wind_forecast(now_utc: pd.Timestamp, days_ahead: int):
+    end_time = now_utc + pd.Timedelta(days=days_ahead)
+
+    sql_query = f"""SELECT * FROM "93c3048e-1dab-4057-a2a9-417540583929" WHERE "Date" >= '{now_utc.isoformat()}' AND "Date" <= '{end_time.isoformat()}' ORDER BY "_id" ASC"""
+
+    params = {"sql": sql_query}
+
+    try:
+        response = requests.get(
+            "https://api.neso.energy/api/3/action/datastore_search_sql",
+            params=parse.urlencode(params)
+        )
+        response.raise_for_status()
+        data = response.json()["result"]["records"]
+        df = pd.DataFrame(data)
+
+        if df.empty:
+            return df
+
+        df["forecast_datetime"] = pd.to_datetime(df["Datetime"], utc=True)
+        df["forecast_datetime_local"] = df["forecast_datetime"].dt.tz_convert("Europe/London")
+
+        # Ensure numeric
+        df["Wind_Forecast"] = pd.to_numeric(
+            df["Wind_Forecast"], errors="coerce"
+        )
+
+        return df.dropna(subset=["Wind_Forecast"])
+
+    except Exception as e:
+        st.warning(f"Failed to fetch wind forecast data: {e}")
+        return pd.DataFrame()
+
 
 # ---------------------------
 # KPI Display
@@ -288,7 +364,6 @@ st.markdown("---")
 # Electricity Chart
 # ---------------------------
 st.markdown("### Future Agile Prices (from now onwards)")
-now_utc = pd.Timestamp.now(tz='UTC').floor('30min')
 tariffs_future = tariffs_visuals[tariffs_visuals['valid_from'] >= now_utc].reset_index(drop=True)
 if not tariffs_future.empty:
     try:
@@ -315,6 +390,52 @@ if not tariffs_future.empty:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("No future electricity data available.")
+
+
+# ---------------------------
+# Wind Generation Forecast
+# ---------------------------
+st.markdown("---")
+st.markdown("### Wind Generation Forecast")
+
+with st.spinner("Fetching wind generation forecast..."):
+    wind_df = fetch_wind_forecast(now_utc, wind_days_ahead)
+
+if not wind_df.empty:
+    if not wind_df.empty:
+        wind_df = wind_df[
+            wind_df["forecast_datetime"] >= now_utc
+        ].copy()
+
+    wind_df["forecast_datetime_local"] = wind_df["forecast_datetime"].dt.tz_convert("Europe/London")
+
+    fig_wind = go.Figure()
+
+    fig_wind.add_trace(go.Scatter(
+        x=wind_df["forecast_datetime_local"],
+        y=wind_df["Wind_Forecast"],
+        mode="lines",
+        line=dict(width=3),
+        hovertemplate="<b>%{x|%Y-%m-%d %H:%M}</b><br>Wind: %{y:.0f} MW<extra></extra>"
+    ))
+
+    fig_wind.update_layout(
+        xaxis_title="Time",
+        yaxis_title="Forecast Wind Generation (MW)",
+        height=350,
+        margin=dict(t=20, b=20),
+    )
+
+    add_daytime_shading(
+        fig_wind,
+        now_utc.tz_convert("Europe/London"),
+        wind_df["forecast_datetime_local"].max(),
+)
+
+    st.plotly_chart(fig_wind, use_container_width=True)
+else:
+    st.info("No wind forecast data available for the selected period.")
+
 
 # ---------------------------
 # Gas Chart
