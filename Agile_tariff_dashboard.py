@@ -42,10 +42,11 @@ def fetch_tariffs(baseurl: str, period_from: str, period_to: str):
     if not tariffs:
         return pd.DataFrame()
     df = pd.json_normalize(tariffs)
-    df['valid_from'] = pd.to_datetime(df.valid_from)
-    df['valid_to'] = pd.to_datetime(df.valid_to)
-    df['date'] = df.valid_from.dt.date
-    df['time'] = df.valid_from.dt.time
+    df['valid_from'] = pd.to_datetime(df.valid_from, utc=True)
+    df['valid_to'] = pd.to_datetime(df.valid_to, utc=True)
+    valid_from_local = df['valid_from'].dt.tz_convert('Europe/London')
+    df['date'] = valid_from_local.dt.date
+    df['time'] = valid_from_local.dt.time
     return df
 
 
