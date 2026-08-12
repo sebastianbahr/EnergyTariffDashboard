@@ -161,8 +161,8 @@ elec_period_from = f'{date_yesterday}T00:00'
 elec_period_to = f'{date_tomorrow}T23:00'
 
 st.sidebar.header("Electricity Configuration")
-fixed_price = st.sidebar.number_input("Fixed tariff (pence/kWh)", min_value=0.0, value=25.24, step=0.01, format="%.2f")
-standing_charge_diff = st.sidebar.number_input("Difference in SC (pence)", min_value=0.0, value=6.5, step=0.01, format="%.2f")
+fixed_price = st.sidebar.number_input("Fixed tariff (pence/kWh)", min_value=0.0, value=25.85, step=0.01, format="%.2f")
+standing_charge_diff = st.sidebar.number_input("Difference in SC (pence)", min_value=0.0, value=1.23, step=0.01, format="%.2f")
 regions_multiplier = st.sidebar.number_input("Region multiplier", value=2.1, step=0.01)
 regions_peak_adder = st.sidebar.number_input("Peak adder (pence)", value=13.0, step=0.01)
 high_threshold = st.sidebar.number_input("High price threshold (pence)", value=30.0, step=0.1)
